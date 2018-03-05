@@ -119,7 +119,7 @@ ACTION_FILTER = None
 NOW = dt.now()
 YEAR = NOW.year
 REPORT_MODE = "short"
-LOG_FILE = "/var/log/maillog"
+LOG_FILES = [] # "/var/log/maillog"
 GEOFILE = ""
 MAPDEST = ""
 RFC3339 = False
@@ -142,7 +142,7 @@ for argument, value in args_list:
     elif argument in ('--geofile'):
         GEOFILE = value
     elif argument in ('-f', '--file'):
-        LOG_FILE = value
+        LOG_FILES.append(value)
     elif argument in ('-y', '--year'):
         YEAR = value
     elif argument in ('--rfc3339'):
@@ -189,122 +189,125 @@ if GEOFILE not in "":
 
 # TODO: Better handle IOError exception in open
 # i.e. User doesn't have read permission for maillog
-maillog = open(LOG_FILE)
 
-for line in maillog:
-    # Get postscreen logs only
-    if "/postscreen[" in line:
-        # apply the user defined IP filter
-        if IP_FILTER in line:
-            # parse the log line
-            line_fields = line.split(None, LOG_CURSOR + 1)
+for LOG_FILE in LOG_FILES:
+    print "INFO: Opening ", LOG_FILE
+    maillog = open(LOG_FILE)
 
-            # parse the ip
-            current_ip = '999.999.999.999'
-            if search(IP_REGEXP, line_fields[LOG_CURSOR + 1]):
-                t = split(IP_REGEXP, line_fields[LOG_CURSOR + 1], maxsplit=1)
-                current_ip = t[1]
-                del t
+    for line in maillog:
+        # Get postscreen logs only
+        if "/postscreen[" in line:
+            # apply the user defined IP filter
+            if IP_FILTER in line:
+                # parse the log line
+                line_fields = line.split(None, LOG_CURSOR + 1)
 
-            if match("^CONNECT$", line_fields[LOG_CURSOR]):
-                if RFC3339:
-                    syslog_date = line_fields[0]
-                else:
-                    syslog_date = line_fields[0] + " " + line_fields[1] + \
-                        " " + line_fields[2]
+                # parse the ip
+                current_ip = '999.999.999.999'
+                if search(IP_REGEXP, line_fields[LOG_CURSOR + 1]):
+                    t = split(IP_REGEXP, line_fields[LOG_CURSOR + 1], maxsplit=1)
+                    current_ip = t[1]
+                    del t
 
-                # first time we see the client, initiate a class instance
-                # store in in the client_list dictionary
-                if current_ip not in ip_list:
-                    ip_list[current_ip] = ClientStat()
-                    ip_list[current_ip].logs["FIRST SEEN"] = \
-                        gen_unix_ts(syslog_date)
-                    ip_list[current_ip].logs["LAST SEEN"] = \
-                        gen_unix_ts(syslog_date)
-                    # perform Geolocation
-                    if GEOFILE not in "":
-                        ip_list[current_ip].geoloc = gi.record_by_addr(current_ip)
+                if match("^CONNECT$", line_fields[LOG_CURSOR]):
+                    if RFC3339:
+                        syslog_date = line_fields[0]
+                    else:
+                        syslog_date = line_fields[0] + " " + line_fields[1] + \
+                            " " + line_fields[2]
 
-                # ip is already known, update the last_seen timestamp
-                else:
-                    ip_list[current_ip].logs["LAST SEEN"] = \
-                        gen_unix_ts(syslog_date)
+                    # first time we see the client, initiate a class instance
+                    # store in in the client_list dictionary
+                    if current_ip not in ip_list:
+                        ip_list[current_ip] = ClientStat()
+                        ip_list[current_ip].logs["FIRST SEEN"] = \
+                            gen_unix_ts(syslog_date)
+                        ip_list[current_ip].logs["LAST SEEN"] = \
+                            gen_unix_ts(syslog_date)
+                        # perform Geolocation
+                        if GEOFILE not in "":
+                            ip_list[current_ip].geoloc = gi.record_by_addr(current_ip)
 
-                ip_list[current_ip].logs["CONNECT"] += 1
+                    # ip is already known, update the last_seen timestamp
+                    else:
+                        ip_list[current_ip].logs["LAST SEEN"] = \
+                            gen_unix_ts(syslog_date)
 
-            # client must be initialized to continue
-            # the string matching is organized to test the most probable
-            # value first, to speed things up
-            elif current_ip in ip_list:
-                if match("^PASS$", line_fields[LOG_CURSOR]):
-                    if search("^OLD", line_fields[LOG_CURSOR + 1]):
-                        ip_list[current_ip].actions["PASS OLD"] += 1
+                    ip_list[current_ip].logs["CONNECT"] += 1
 
-                        # if the connection count is 2, and the IP has already
-                        # been rejected with a code 450 calculate the
-                        # reconnection delay
-                        if (ip_list[current_ip].logs["CONNECT"] == 2 and
-                                ip_list[current_ip].actions["NOQUEUE 450 deep protocol test reconnection"] > 0):
-                            ip_list[current_ip].logs["RECO. DELAY (graylist)"] = \
-                                ip_list[current_ip].logs["LAST SEEN"] - \
-                                ip_list[current_ip].logs["FIRST SEEN"]
+                # client must be initialized to continue
+                # the string matching is organized to test the most probable
+                # value first, to speed things up
+                elif current_ip in ip_list:
+                    if match("^PASS$", line_fields[LOG_CURSOR]):
+                        if search("^OLD", line_fields[LOG_CURSOR + 1]):
+                            ip_list[current_ip].actions["PASS OLD"] += 1
 
-                    elif search("^NEW", line_fields[LOG_CURSOR + 1]):
-                        ip_list[current_ip].actions["PASS NEW"] += 1
+                            # if the connection count is 2, and the IP has already
+                            # been rejected with a code 450 calculate the
+                            # reconnection delay
+                            if (ip_list[current_ip].logs["CONNECT"] == 2 and
+                                    ip_list[current_ip].actions["NOQUEUE 450 deep protocol test reconnection"] > 0):
+                                ip_list[current_ip].logs["RECO. DELAY (graylist)"] = \
+                                    ip_list[current_ip].logs["LAST SEEN"] - \
+                                    ip_list[current_ip].logs["FIRST SEEN"]
 
-                elif match("^NOQUEUE:$", line_fields[LOG_CURSOR]):
-                    if search("too many connections", line_fields[LOG_CURSOR + 1]):
-                        ip_list[current_ip].actions["NOQUEUE too many connections"] += 1
-                    elif search("all server ports busy", line_fields[LOG_CURSOR]):
-                        ip_list[current_ip].actions["NOQUEUE all server ports busy"] += 1
-                    elif search("450 4.3.2 Service currently unavailable", line_fields[LOG_CURSOR + 1]):
-                        ip_list[current_ip].actions["NOQUEUE 450 deep protocol test reconnection"] += 1
+                        elif search("^NEW", line_fields[LOG_CURSOR + 1]):
+                            ip_list[current_ip].actions["PASS NEW"] += 1
 
-                elif match("^HANGUP$", line_fields[LOG_CURSOR]):
-                    ip_list[current_ip].actions["HANGUP"] += 1
+                    elif match("^NOQUEUE:$", line_fields[LOG_CURSOR]):
+                        if search("too many connections", line_fields[LOG_CURSOR + 1]):
+                            ip_list[current_ip].actions["NOQUEUE too many connections"] += 1
+                        elif search("all server ports busy", line_fields[LOG_CURSOR]):
+                            ip_list[current_ip].actions["NOQUEUE all server ports busy"] += 1
+                        elif search("450 4.3.2 Service currently unavailable", line_fields[LOG_CURSOR + 1]):
+                            ip_list[current_ip].actions["NOQUEUE 450 deep protocol test reconnection"] += 1
 
-                elif match("^DNSBL$", line_fields[LOG_CURSOR]):
-                    ip_list[current_ip].actions["DNSBL"] += 1
-                    # store the rank
-                    rank_line = line_fields[LOG_CURSOR + 1].split(None)
-                    ip_list[current_ip].dnsbl_ranks.append(rank_line[1])
+                    elif match("^HANGUP$", line_fields[LOG_CURSOR]):
+                        ip_list[current_ip].actions["HANGUP"] += 1
 
-                elif match("^PREGREET$", line_fields[LOG_CURSOR]):
-                    ip_list[current_ip].actions["PREGREET"] += 1
+                    elif match("^DNSBL$", line_fields[LOG_CURSOR]):
+                        ip_list[current_ip].actions["DNSBL"] += 1
+                        # store the rank
+                        rank_line = line_fields[LOG_CURSOR + 1].split(None)
+                        ip_list[current_ip].dnsbl_ranks.append(rank_line[1])
 
-                elif match("^COMMAND$", line_fields[LOG_CURSOR]):
-                    if search("^PIPELINING", line_fields[LOG_CURSOR + 1]):
-                        ip_list[current_ip].actions["COMMAND PIPELINING"] += 1
+                    elif match("^PREGREET$", line_fields[LOG_CURSOR]):
+                        ip_list[current_ip].actions["PREGREET"] += 1
 
-                    elif search("^TIME LIMIT", line_fields[LOG_CURSOR + 1]):
-                        ip_list[current_ip].actions["COMMAND TIME LIMIT"] += 1
+                    elif match("^COMMAND$", line_fields[LOG_CURSOR]):
+                        if search("^PIPELINING", line_fields[LOG_CURSOR + 1]):
+                            ip_list[current_ip].actions["COMMAND PIPELINING"] += 1
 
-                    elif search("^COUNT LIMIT", line_fields[LOG_CURSOR + 1]):
-                        ip_list[current_ip].actions["COMMAND COUNT LIMIT"] += 1
+                        elif search("^TIME LIMIT", line_fields[LOG_CURSOR + 1]):
+                            ip_list[current_ip].actions["COMMAND TIME LIMIT"] += 1
 
-                    elif search("^LENGTH LIMIT", line_fields[LOG_CURSOR + 1]):
-                        ip_list[current_ip].actions["COMMAND LENGTH LIMIT"] += 1
+                        elif search("^COUNT LIMIT", line_fields[LOG_CURSOR + 1]):
+                            ip_list[current_ip].actions["COMMAND COUNT LIMIT"] += 1
 
-                elif match("^WHITELISTED$", line_fields[LOG_CURSOR]):
-                    ip_list[current_ip].actions["WHITELISTED"] += 1
+                        elif search("^LENGTH LIMIT", line_fields[LOG_CURSOR + 1]):
+                            ip_list[current_ip].actions["COMMAND LENGTH LIMIT"] += 1
 
-                elif match("^BLACKLISTED$", line_fields[LOG_CURSOR]):
-                    ip_list[current_ip].actions["BLACKLISTED"] += 1
+                    elif match("^WHITELISTED$", line_fields[LOG_CURSOR]):
+                        ip_list[current_ip].actions["WHITELISTED"] += 1
 
-                elif match("^BARE$", line_fields[LOG_CURSOR]):
-                    if search("^NEWLINE", line_fields[LOG_CURSOR + 1]):
-                        ip_list[current_ip].actions["BARE NEWLINE"] += 1
+                    elif match("^BLACKLISTED$", line_fields[LOG_CURSOR]):
+                        ip_list[current_ip].actions["BLACKLISTED"] += 1
 
-                elif match("^NON-SMTP$", line_fields[LOG_CURSOR]):
-                    if search("^COMMAND", line_fields[LOG_CURSOR + 1]):
-                        ip_list[current_ip].actions["NON-SMTP COMMAND"] += 1
+                    elif match("^BARE$", line_fields[LOG_CURSOR]):
+                        if search("^NEWLINE", line_fields[LOG_CURSOR + 1]):
+                            ip_list[current_ip].actions["BARE NEWLINE"] += 1
 
-                elif match("^WHITELIST$", line_fields[LOG_CURSOR]):
-                    if search("^VETO", line_fields[LOG_CURSOR + 1]):
-                        ip_list[current_ip].actions["WHITELIST VETO"] += 1
+                    elif match("^NON-SMTP$", line_fields[LOG_CURSOR]):
+                        if search("^COMMAND", line_fields[LOG_CURSOR + 1]):
+                            ip_list[current_ip].actions["NON-SMTP COMMAND"] += 1
 
-# done with the log file
-maillog.close
+                    elif match("^WHITELIST$", line_fields[LOG_CURSOR]):
+                        if search("^VETO", line_fields[LOG_CURSOR + 1]):
+                            ip_list[current_ip].actions["WHITELIST VETO"] += 1
+
+    # done with the log file
+    maillog.close
 
 
 # additional reports shown in full mode only
