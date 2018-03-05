@@ -340,6 +340,7 @@ comeback = {'<10s': 0, '10s to 30s': 0, '>30s to 1min': 0, '>1min to 5min': 0,
             '>5 min to 30min': 0, '>30min to 2h': 0, '>2h to 5h': 0,
             '>5h to 12h': 0, '>12h to 24h': 0, '>24h': 0}
 blocked_countries = defaultdict(int)
+blocked_ips = defaultdict(list)
 
 
 # normal report mode
@@ -401,6 +402,7 @@ if REPORT_MODE in ('short', 'full', 'none'):
                 or ip_list[client].actions["NON-SMTP COMMAND"] > 0)):
 
             blocked_countries[ip_list[client].geoloc["country_name"]] += 1
+            blocked_ips[ip_list[client].geoloc["country_name"]] += [ client ]
             clients["blocked clients"] += 1
             if MAPDEST not in "":
                 blocked_clients[client] = 1
@@ -492,7 +494,7 @@ if REPORT_MODE in ('short', 'full'):
                     count_format = "%" + str(len(str(clients))) + "d"
                 client_percent = "(%5.2f%%)" % \
                     float(Decimal(clients) / total_blocked * 100)
-                print count_format % clients, client_percent, country
+                print count_format % clients, client_percent, country, "(",  ", ".join(sorted(blocked_ips[country])), ")"
 
 # generate the HTML for the map and store it in a file
 if MAPDEST not in "" and GEOFILE not in "":
